@@ -27,7 +27,7 @@ exports.handler = async function(event, context) {
 
         // 2. Search for standard bounce notifications
         const searchCriteria = [
-            ['OR', 'SUBJECT', 'Delivery Status Notification', 'FROM', 'Mailer-Daemon']
+            ['OR', ['SUBJECT', 'Delivery Status Notification'], ['FROM', 'Mailer-Daemon']]
         ];
         // Fetch only the full body
         const fetchOptions = { bodies: [''], struct: true };
