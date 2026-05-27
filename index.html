@@ -605,10 +605,6 @@
         });
     });
 
-    const API_KEY = "AIzaSyC-9KFTgkwhobbxmRrQOqih5Y8Admd9cA4";
-    // Public CORS proxy to allow browser-based Google API calls
-    const PROXY = "https://corsproxy.io/?url=";
-
     const logDiv = document.getElementById('statusLog');
     const submitBtn = document.getElementById('submitBtn');
 
@@ -620,23 +616,36 @@
 
     async function searchPlaces(city, placeType) {
         let results = [];
-        let query = encodeURIComponent(`${placeType} ${city}`);
-        let targetUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${API_KEY}`;
-        let url = `${PROXY}${encodeURIComponent(targetUrl)}`;
-        
-        while (url) {
+        let pagetoken = null;
+        let firstPage = true;
+
+        while (true) {
             try {
-                let res = await fetch(url);
-                let data = await res.json();
+                const body = pagetoken
+                    ? { action: 'search', pagetoken }
+                    : { action: 'search', query: `${placeType} ${city}` };
+
+                let res = await fetch('/.netlify/functions/places', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                let json = await res.json();
+                let data = json.data || {};
+
+                if (!json.success) {
+                    log(`Search error for ${city}: ${json.error}`);
+                    break;
+                }
+
                 if (data.results) results = results.concat(data.results);
-                
+
                 if (data.next_page_token) {
                     log(`Fetching next page for ${city}...`);
-                    await new Promise(r => setTimeout(r, 2000)); // Google mandatory delay
-                    let nextUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken=${data.next_page_token}&key=${API_KEY}`;
-                    url = `${PROXY}${encodeURIComponent(nextUrl)}`;
+                    await new Promise(r => setTimeout(r, 2500));
+                    pagetoken = data.next_page_token;
                 } else {
-                    url = null;
+                    break;
                 }
             } catch (err) {
                 log(`Search error for ${city}: ${err.message}`);
@@ -647,12 +656,14 @@
     }
 
     async function getDetails(placeId) {
-        let targetUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,formatted_phone_number,website,url&key=${API_KEY}`;
-        let url = `${PROXY}${encodeURIComponent(targetUrl)}`;
         try {
-            let res = await fetch(url);
-            let data = await res.json();
-            return data.result || {};
+            let res = await fetch('/.netlify/functions/places', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'details', placeId })
+            });
+            let json = await res.json();
+            return (json.data && json.data.result) || {};
         } catch {
             return {};
         }
@@ -661,26 +672,16 @@
     async function scrapeEmail(website) {
         if (!website) return "";
         try {
-            // Attempt home page scan
-            let res = await fetch(`${PROXY}${encodeURIComponent(website)}`);
-            let text = await res.text();
-            let emails = extractEmails(text);
-            if (emails.length > 0) return emails[0];
-
-            // Deep scan common sub-pages
-            const paths = ["contact", "contact-us", "about"];
-            for (let path of paths) {
-                try {
-                    let cleanUrl = website.replace(/\/$/, "");
-                    let targetUrl = `${cleanUrl}/${path}`;
-                    let subRes = await fetch(`${PROXY}${encodeURIComponent(targetUrl)}`);
-                    let subText = await subRes.text();
-                    let subEmails = extractEmails(subText);
-                    if (subEmails.length > 0) return subEmails[0];
-                } catch {}
-            }
-        } catch {}
-        return "";
+            let res = await fetch('/.netlify/functions/places', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'scrapeEmail', website })
+            });
+            let json = await res.json();
+            return json.email || "";
+        } catch {
+            return "";
+        }
     }
 
     function extractEmails(text) {
