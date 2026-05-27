@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Places Lead Extractor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 250px;
+            background-color: #1e293b;
+            color: white;
+            padding: 20px 0;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        .sidebar .logo {
+            font-size: 20px;
+            font-weight: 700;
+            padding: 0 20px 20px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .sidebar nav {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar nav a {
+            color: #cbd5e1;
+            text-decoration: none;
+            padding: 12px 20px;
+            transition: all 0.2s ease;
+        }
+
+        .sidebar nav a:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .sidebar nav a.active {
+            background-color: var(--primary);
+            color: white;
+            border-left: 4px solid #93c5fd;
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            overflow-y: auto;
+        }
+
+        .container {
+            background-color: var(--card-bg);
+            padding: 35px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+            max-width: 480px;
+            width: 100%;
+            border: 1px solid var(--border);
+            margin-top: 5vh;
+        }
+
+        h2 {
+            margin: 0 0 8px 0;
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        p.subtitle {
+            margin: 0 0 24px 0;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        input[type="text"], input[type="password"], input[type="number"], textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 15px;
+            background-color: #fafafa;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+
+        input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:focus, textarea:focus {
+            border-color: var(--primary);
+            background-color: #fff;
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 5px;
+        }
+
+        button {
+            width: 100%;
+            background-color: var(--primary);
+            color: white;
+            padding: 14px;
+            border: none;
+            border-radius: 6px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        #statusLog {
+            display: none;
+            margin-top: 20px;
+            font-size: 13px;
+            padding: 12px;
+            border-radius: 6px;
+            max-height: 150px;
+            overflow-y: auto;
+            background-color: #f1f5f9;
+            border: 1px solid var(--border);
+            white-space: pre-line;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <div class="logo">Toolkit</div>
+    <nav>
+        <a href="#" id="navPlaceFinder" class="active" onclick="switchView('placeFinder')">Place Finder</a>
+        <a href="#" id="navSendEmails" onclick="switchView('sendEmails')">Send Emails</a>
+        <a href="#" id="navFailedEmails" onclick="switchView('failedEmails')">List Failed Emails</a>
+    </nav>
+</div>
+
+<main class="main-content">
+    <div class="container" id="placeFinderView">
+    <h2>Google Places Extractor</h2>
+    <p class="subtitle">Pure JavaScript Edition — No server timeouts.</p>
+    
+    <form id="scraperForm">
+        <div class="form-group">
+            <label for="cities">Cities</label>
+            <input type="text" id="cities" placeholder="New York, Los Angeles, Chicago" required>
+            <div class="help-text">Separate multiple cities with commas (,).</div>
+        </div>
+        
+        <div class="form-group">
+            <label for="place_type">Place Type</label>
+            <input type="text" id="place_type" placeholder="Yoga Studio, Hospital, Cafe" required>
+        </div>
+        
+        <button type="submit" id="submitBtn">Find & Download CSV</button>
+    </form>
+    
+    <div id="statusLog"></div>
+    </div>
+
+    <!-- Send Emails View -->
+    <div class="container" id="sendEmailsView" style="display: none; max-width: 600px;">
+        <h2>Send Emails</h2>
+        <p class="subtitle">Bulk email sender directly from your browser.</p>
+        
+        <form id="emailForm">
+            <div class="form-group">
+                <label for="csvFile">Upload CSV (from Place Finder)</label>
+                <input type="file" id="csvFile" accept=".csv" required style="padding: 10px; width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; background-color: #fafafa;">
+            </div>
+            
+            <div class="form-group">
+                <label for="indexRange">Row Index Range</label>
+                <input type="text" id="indexRange" placeholder="e.g. 1-10 or 1,3,5" required>
+                <div class="help-text">Row 1 is the first data row after headers.</div>
+            </div>
+            
+            <div class="form-group">
+                <label for="emailSubject">Subject Template</label>
+                <input type="text" id="emailSubject" value="Adding a premium Pilates channel to {Name} (Zero extra staff needed)" required>
+                <div class="help-text">Use {Name} to insert the place name.</div>
+            </div>
+            
+            <div class="form-group">
+                <label for="emailBody">HTML Body Template</label>
+                <textarea id="emailBody" rows="12" required>
+<p>Namaste {Name} team,</p>
+
+<p>We frequently speak with independent yoga studios that want to offer high-ticket Pilates options but are stopped by the complexity and cost of buying Reformers and hiring instructors for every session.</p>
+
+<p>Starka solves this by providing a high-end machine with an interactive smart kiosk. It delivers personalized, on-screen guided sessions, meaning your clients get a premium experience with zero staffing overhead required from you.</p>
+
+<p>Here is a recent case study from a studio owner who transitioned her business to this exact autonomous model to align with her journey. You can see her workflow and the equipment in action here:<br>
+<strong><a href="https://drive.google.com/file/d/1sMhS9aP1hGUNwCYt8nlvC7q-E_ZG2YTC/view" target="_blank">Watch the Demo</a></strong></p>
+
+<p>We are launching a limited pilot program for our early cohort of studios, featuring highly favorable entry options like structured rent-to-own financing.</p>
+
+<p>Should we invest in an exploratory call to see if this is a right fit? Or if you have any queries, we can do this asynchronously as well here.</p>
+
+<p>Gracefully,<br><br>
+<strong>Shiv @ Starka</strong></p>
+                </textarea>
+                <div class="help-text">HTML is supported. Use {Name} for dynamic insertion.</div>
+            </div>
+
+            <details style="margin-bottom: 20px; font-size: 14px; cursor: pointer;">
+                <summary style="font-weight: 600; color: var(--text-muted); padding: 5px 0;">SMTP Configuration (Click to edit)</summary>
+                <div style="margin-top: 10px; padding: 15px; border: 1px solid var(--border); border-radius: 6px; background: #fff;">
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>SMTP Server</label>
+                        <input type="text" id="smtpHost" value="nrzmszcz.a2hosted.com">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>Email Username</label>
+                        <input type="text" id="smtpUser" value="shiv@starka.ai">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>Password</label>
+                        <input type="password" id="smtpPass" value="Shiv7this">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>Delay Between Emails (ms)</label>
+                        <input type="number" id="smtpDelay" value="30000">
+                    </div>
+                </div>
+            </details>
+            
+            <button type="submit" id="sendBtn">Start Sending Emails</button>
+        </form>
+        
+        <div id="emailLog" style="display: none; margin-top: 20px; font-size: 13px; padding: 12px; border-radius: 6px; max-height: 200px; overflow-y: auto; background-color: #f1f5f9; border: 1px solid var(--border); white-space: pre-line; text-align: left;"></div>
+    </div>
+
+    <!-- Failed Emails View -->
+    <div class="container" id="failedEmailsView" style="display: none; max-width: 600px;">
+        <h2>List Failed Emails</h2>
+        <p class="subtitle">Scans IMAP mailbox for bounces and matches them against your original CSV.</p>
+        
+        <form id="failedForm">
+            <div class="form-group">
+                <label for="originalCsvFile">Upload Original CSV Database</label>
+                <input type="file" id="originalCsvFile" accept=".csv" required style="padding: 10px; width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; background-color: #fafafa;">
+            </div>
+            
+            <details style="margin-bottom: 20px; font-size: 14px; cursor: pointer;">
+                <summary style="font-weight: 600; color: var(--text-muted); padding: 5px 0;">IMAP Configuration (Click to edit)</summary>
+                <div style="margin-top: 10px; padding: 15px; border: 1px solid var(--border); border-radius: 6px; background: #fff;">
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>IMAP Server</label>
+                        <input type="text" id="imapHost" value="nrzmszcz.a2hosted.com">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>IMAP Port</label>
+                        <input type="number" id="imapPort" value="993">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>Email Username</label>
+                        <input type="text" id="imapUser" value="shiv@starka.ai">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label>Password</label>
+                        <input type="password" id="imapPass" value="Shiv7this">
+                    </div>
+                </div>
+            </details>
+            
+            <button type="submit" id="checkBouncesBtn">Scan Mailbox & Find Bounces</button>
+        </form>
+        
+        <div id="failedLog" style="display: none; margin-top: 20px; font-size: 13px; padding: 12px; border-radius: 6px; max-height: 200px; overflow-y: auto; background-color: #f1f5f9; border: 1px solid var(--border); white-space: pre-line; text-align: left;"></div>
+        
+        <div id="failedResults" style="display: none; margin-top: 20px; padding: 15px; background: #fff; border: 1px solid var(--border); border-radius: 6px; text-align: center;">
+            <p style="margin-top: 0; font-weight: 600; font-size: 15px; color: var(--text);" id="failedStats"></p>
+            <button id="downloadFailedBtn" style="background-color: #10b981; margin-top: 10px;">Download Detailed CSV</button>
+        </div>
+    </div>
+</main>
+
+<script>
+    function switchView(view) {
+        document.getElementById('placeFinderView').style.display = view === 'placeFinder' ? 'block' : 'none';
+        document.getElementById('sendEmailsView').style.display = view === 'sendEmails' ? 'block' : 'none';
+        document.getElementById('failedEmailsView').style.display = view === 'failedEmails' ? 'block' : 'none';
+        
+        document.getElementById('navPlaceFinder').className = view === 'placeFinder' ? 'active' : '';
+        document.getElementById('navSendEmails').className = view === 'sendEmails' ? 'active' : '';
+        document.getElementById('navFailedEmails').className = view === 'failedEmails' ? 'active' : '';
+    }
+
+    // --- Email Sending Logic ---
+    const emailLogDiv = document.getElementById('emailLog');
+    const sendBtn = document.getElementById('sendBtn');
+    
+    function emailLog(message) {
+        emailLogDiv.style.display = 'block';
+        emailLogDiv.innerText += message + "\n";
+        emailLogDiv.scrollTop = emailLogDiv.scrollHeight;
+    }
+
+    function parseIndices(inputStr, maxLen) {
+        let indices = [];
+        try {
+            if (inputStr.includes('-')) {
+                let parts = inputStr.split('-');
+                let start = parseInt(parts[0].trim());
+                let end = parseInt(parts[1].trim());
+                for (let i = start; i <= end; i++) indices.push(i);
+            } else if (inputStr.includes(',')) {
+                indices = inputStr.split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+            } else {
+                let val = parseInt(inputStr.trim());
+                if(!isNaN(val)) indices = [val];
+            }
+        } catch (e) {
+            emailLog("Invalid index format.");
+        }
+        return indices.filter(i => i >= 1 && i <= maxLen).map(i => i - 1);
+    }
+
+    document.getElementById('emailForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const fileInput = document.getElementById('csvFile');
+        if (!fileInput.files.length) {
+            alert("Please upload a CSV file.");
+            return;
+        }
+
+        sendBtn.disabled = true;
+        emailLogDiv.innerText = "";
+        emailLog("Parsing CSV file...");
+
+        const file = fileInput.files[0];
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: async function(results) {
+                const data = results.data;
+                emailLog(`Loaded ${data.length} rows.`);
+                
+                const rangeStr = document.getElementById('indexRange').value;
+                const selectedIndices = parseIndices(rangeStr, data.length);
+                
+                if (!selectedIndices.length) {
+                    emailLog("No valid row indices selected.");
+                    sendBtn.disabled = false;
+                    return;
+                }
+
+                if (!confirm(`Do you want to send emails to ${selectedIndices.length} records?`)) {
+                    sendBtn.disabled = false;
+                    return;
+                }
+
+                const host = document.getElementById('smtpHost').value;
+                const user = document.getElementById('smtpUser').value;
+                const pass = document.getElementById('smtpPass').value;
+                const delayMs = parseInt(document.getElementById('smtpDelay').value) || 30000;
+                
+                const subjectTpl = document.getElementById('emailSubject').value;
+                const bodyTpl = document.getElementById('emailBody').value;
+
+                let successCount = 0;
+                let failCount = 0;
+
+                for (let i = 0; i < selectedIndices.length; i++) {
+                    const idx = selectedIndices[i];
+                    const row = data[idx];
+                    
+                    const recipientEmail = row['Email'];
+                    const name = row['Name'] || row['Center Name'] || 'Partner';
+                    
+                    if (!recipientEmail || !recipientEmail.includes('@')) {
+                        emailLog(`[Row ${idx + 1}] Skipped: No valid email for ${name}`);
+                        failCount++;
+                        continue;
+                    }
+
+                    // Replace variables
+                    let subject = subjectTpl;
+                    let body = bodyTpl;
+                    Object.keys(row).forEach(key => {
+                        const regex = new RegExp(`{${key}}`, 'g');
+                        subject = subject.replace(regex, row[key] || '');
+                        body = body.replace(regex, row[key] || '');
+                    });
+                    
+                    subject = subject.replace(/{Name}/g, name).replace(/{center_name}/g, name);
+                    body = body.replace(/{Name}/g, name).replace(/{center_name}/g, name);
+
+                    emailLog(`[Row ${idx + 1}] Sending to: ${name} (${recipientEmail})...`);
+
+                    try {
+                        const response = await fetch('/.netlify/functions/sendEmail', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                host: host,
+                                user: user,
+                                password: pass,
+                                fromName: "Shiv @ Starka",
+                                to: recipientEmail,
+                                subject: subject,
+                                body: body
+                            })
+                        });
+                        
+                        let resData;
+                        try {
+                            const contentType = response.headers.get("content-type");
+                            if (contentType && contentType.indexOf("application/json") !== -1) {
+                                resData = await response.json();
+                            } else {
+                                const rawText = await response.text();
+                                resData = { success: false, error: `HTTP ${response.status}: ${rawText.substring(0, 100)}...` };
+                            }
+                        } catch(e) {
+                            resData = { success: false, error: `Parsing error: ${e.message}` };
+                        }
+                        
+                        if (response.ok && resData.success) {
+                            emailLog(`[✓] Sent successfully.`);
+                            successCount++;
+                        } else {
+                            emailLog(`[X] Failed: ${resData.error || 'Unknown Error'}`);
+                            failCount++;
+                        }
+                    } catch (err) {
+                        emailLog(`[X] Error: ${err.message}`);
+                        failCount++;
+                    }
+
+                    if (i < selectedIndices.length - 1) {
+                        emailLog(`Waiting ${delayMs/1000}s before next email...`);
+                        await new Promise(r => setTimeout(r, delayMs));
+                    }
+                }
+                
+                emailLog(`\nCompleted! Success: ${successCount}, Failed: ${failCount}`);
+                sendBtn.disabled = false;
+            }
+        });
+    });
+
+    // --- Failed Emails Logic ---
+    const failedLogDiv = document.getElementById('failedLog');
+    const checkBouncesBtn = document.getElementById('checkBouncesBtn');
+    
+    function failedLog(message) {
+        failedLogDiv.style.display = 'block';
+        failedLogDiv.innerText += message + "\n";
+        failedLogDiv.scrollTop = failedLogDiv.scrollHeight;
+    }
+
+    document.getElementById('failedForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const fileInput = document.getElementById('originalCsvFile');
+        if (!fileInput.files.length) {
+            alert("Please upload your original CSV database.");
+            return;
+        }
+
+        checkBouncesBtn.disabled = true;
+        failedLogDiv.innerText = "";
+        document.getElementById('failedResults').style.display = 'none';
+        failedLog("Parsing original CSV file...");
+
+        const file = fileInput.files[0];
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: async function(results) {
+                const data = results.data;
+                failedLog(`[+] Loaded original file with ${data.length} records.`);
+                
+                // Ensure email column exists
+                if (data.length > 0 && !data[0].hasOwnProperty('Email')) {
+                    failedLog("[-] Error: 'Email' column heading missing from original file.");
+                    checkBouncesBtn.disabled = false;
+                    return;
+                }
+
+                const host = document.getElementById('imapHost').value;
+                const port = parseInt(document.getElementById('imapPort').value) || 993;
+                const user = document.getElementById('imapUser').value;
+                const pass = document.getElementById('imapPass').value;
+
+                failedLog("[+] Connecting to local IMAP API bridge...");
+                
+                try {
+                    // Call the Netlify Serverless Function bridge
+                    const response = await fetch('/.netlify/functions/checkBounces', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ host, port, user, password: pass })
+                    });
+                    
+                    let resData;
+                    try {
+                        resData = await response.json();
+                    } catch(e) {
+                        failedLog(`[-] Failed to reach API. Server returned status: ${response.status}.`);
+                        checkBouncesBtn.disabled = false;
+                        return;
+                    }
+                    
+                    if (!response.ok || !resData.success) {
+                        failedLog(`[-] Error: ${resData.error || 'Unknown error occurred.'}`);
+                        checkBouncesBtn.disabled = false;
+                        return;
+                    }
+                    
+                    const failedEmailsSet = new Set(resData.failed_emails.map(e => e.toLowerCase().trim()));
+                    
+                    if (failedEmailsSet.size === 0) {
+                        failedLog("[-] No delivery failure logs matched inside the inbox folder.");
+                        checkBouncesBtn.disabled = false;
+                        return;
+                    }
+                    
+                    failedLog(`[+] Processing ${failedEmailsSet.size} unique bounce addresses through file tracking index...`);
+
+                    const matchedRows = [];
+                    data.forEach(row => {
+                        const emailVal = (row['Email'] || '').toLowerCase().trim();
+                        if (failedEmailsSet.has(emailVal)) {
+                            matchedRows.push(row);
+                        }
+                    });
+
+                    if (matchedRows.length > 0) {
+                        failedLog(`[✓] SUCCESS: Compiled detailed bounce logs.`);
+                        failedLog(`[✓] Matched ${matchedRows.length} failed delivery records.`);
+                        
+                        document.getElementById('failedResults').style.display = 'block';
+                        document.getElementById('failedStats').innerText = `${matchedRows.length} Bounced Emails Found`;
+                        
+                        document.getElementById('downloadFailedBtn').onclick = function() {
+                            let csvContent = "\uFEFF" + Papa.unparse(matchedRows);
+                            let blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                            let url = URL.createObjectURL(blob);
+                            let link = document.createElement("a");
+                            link.setAttribute("href", url);
+                            link.setAttribute("download", "failed_deliveries_detailed.csv");
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                        };
+                    } else {
+                        failedLog("\n[-] Matched 0 bounce records inside your CSV file. This can mean:\n    a) The bounced emails in your inbox belong to an older/different campaign list.\n    b) The email addresses parsed from the headers don't match the exact text strings in your CSV file columns.");
+                    }
+                } catch (err) {
+                    failedLog(`[-] Network Error: ${err.message}. Make sure 'python server.py' is running.`);
+                }
+                
+                checkBouncesBtn.disabled = false;
+            }
+        });
+    });
+
+    const API_KEY = "AIzaSyC-9KFTgkwhobbxmRrQOqih5Y8Admd9cA4";
+    // Public CORS proxy to allow browser-based Google API calls
+    const PROXY = "https://corsproxy.io/?url=";
+
+    const logDiv = document.getElementById('statusLog');
+    const submitBtn = document.getElementById('submitBtn');
+
+    function log(message) {
+        logDiv.style.display = 'block';
+        logDiv.innerText += message + "\n";
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    async function searchPlaces(city, placeType) {
+        let results = [];
+        let query = encodeURIComponent(`${placeType} ${city}`);
+        let targetUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${API_KEY}`;
+        let url = `${PROXY}${encodeURIComponent(targetUrl)}`;
+        
+        while (url) {
+            try {
+                let res = await fetch(url);
+                let data = await res.json();
+                if (data.results) results = results.concat(data.results);
+                
+                if (data.next_page_token) {
+                    log(`Fetching next page for ${city}...`);
+                    await new Promise(r => setTimeout(r, 2000)); // Google mandatory delay
+                    let nextUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken=${data.next_page_token}&key=${API_KEY}`;
+                    url = `${PROXY}${encodeURIComponent(nextUrl)}`;
+                } else {
+                    url = null;
+                }
+            } catch (err) {
+                log(`Search error for ${city}: ${err.message}`);
+                break;
+            }
+        }
+        return results;
+    }
+
+    async function getDetails(placeId) {
+        let targetUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,formatted_phone_number,website,url&key=${API_KEY}`;
+        let url = `${PROXY}${encodeURIComponent(targetUrl)}`;
+        try {
+            let res = await fetch(url);
+            let data = await res.json();
+            return data.result || {};
+        } catch {
+            return {};
+        }
+    }
+
+    async function scrapeEmail(website) {
+        if (!website) return "";
+        try {
+            // Attempt home page scan
+            let res = await fetch(`${PROXY}${encodeURIComponent(website)}`);
+            let text = await res.text();
+            let emails = extractEmails(text);
+            if (emails.length > 0) return emails[0];
+
+            // Deep scan common sub-pages
+            const paths = ["contact", "contact-us", "about"];
+            for (let path of paths) {
+                try {
+                    let cleanUrl = website.replace(/\/$/, "");
+                    let targetUrl = `${cleanUrl}/${path}`;
+                    let subRes = await fetch(`${PROXY}${encodeURIComponent(targetUrl)}`);
+                    let subText = await subRes.text();
+                    let subEmails = extractEmails(subText);
+                    if (subEmails.length > 0) return subEmails[0];
+                } catch {}
+            }
+        } catch {}
+        return "";
+    }
+
+    function extractEmails(text) {
+        if (!text) return [];
+        // Clean common obfuscations
+        let cleanText = text.replace(/\[at\]/g, "@").replace(/\(at\)/g, "@").replace(/\[dot\]/g, ".").replace(/\(dot\)/g, ".");
+        let regex = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+        let matches = cleanText.match(regex);
+        return matches ? [...new Set(matches)] : [];
+    }
+
+    function downloadCSV(rows, filename) {
+        let csvContent = "\uFEFF"; // Byte Order Mark for Excel UTF-8 support
+        rows.forEach(row => {
+            let sanitizedRow = row.map(val => {
+                let clean = String(val).replace(/"/g, '""');
+                return clean.includes(',') || clean.includes('\n') || clean.includes('"') ? `"${clean}"` : clean;
+            });
+            csvContent += sanitizedRow.join(",") + "\r\n";
+        });
+
+        let blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        let url = URL.createObjectURL(blob);
+        let link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    document.getElementById('scraperForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        submitBtn.disabled = true;
+        logDiv.innerText = "";
+        
+        const citiesInput = document.getElementById('cities').value;
+        const placeType = document.getElementById('place_type').value;
+        const cities = citiesInput.split(',').map(c => c.trim()).filter(c => c);
+
+        log("Starting data extraction...");
+        
+        let csvRows = [["Name", "Email", "Phone", "Website", "Address", "More Info", "City Input"]];
+        let seen = new Set();
+
+        for (let city of cities) {
+            log(`Searching for elements in: ${city}`);
+            let places = await searchPlaces(city, placeType);
+            log(`Found ${places.length} raw listings in ${city}.`);
+
+            for (let place of places) {
+                if (!place.place_id || seen.has(place.place_id)) continue;
+                seen.add(place.place_id);
+
+                let details = await getDetails(place.place_id);
+                let name = details.name || "";
+                let website = details.website || "";
+                
+                log(`Processing: ${name}`);
+                let email = await scrapeEmail(website);
+
+                csvRows.push([
+                    name,
+                    email,
+                    details.formatted_phone_number || "",
+                    website,
+                    details.formatted_address || "",
+                    details.url || "",
+                    city
+                ]);
+                
+                // Light safety delay between entries
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
+
+        log("Finished! Compiling CSV file...");
+        let fileTitle = `${placeType.trim().replace(/\s+/g, '_')}_leads.csv`;
+        downloadCSV(csvRows, fileTitle);
+        
+        submitBtn.disabled = false;
+    });
+</script>
+
+</body>
+</html>
