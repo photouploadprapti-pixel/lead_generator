@@ -1,17 +1,34 @@
 const https = require('https')
+const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
 
-const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyC-9KFTgkwhobbxmRrQOqih5Y8Admd9cA4'
+const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyBTE8u7TtPmYG6oTyOz5vNin1QpsF-Y7wc'
+const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
+const SEARCH_FIELD_MASK = 'places.id,nextPageToken'
+const DETAILS_FIELD_MASK =
+  'id,displayName,formattedAddress,nationalPhoneNumber,websiteUri,googleMapsUri'
 
 /**
- * Fetch a URL over HTTPS and parse the JSON response.
+ * Send an HTTPS request and parse the JSON response.
  * @param {string} url
- * @returns {Promise<unknown>}
+ * @param {{ method?: string, headers?: Record<string, string>, body?: string }} [options]
+ * @returns {Promise<Record<string, unknown>>}
  */
-const httpsGet = (url) => {
+const httpsJson = (url, options = {}) => {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const parsed = new URL(url)
+    const headers = { ...(options.headers || {}) }
+    if (options.body) {
+      headers['Content-Length'] = String(Buffer.byteLength(options.body))
+    }
+
+    const req = https.request({
+      hostname: parsed.hostname,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: options.method || 'GET',
+      headers
+    }, (res) => {
       let data = ''
       res.on('data', (chunk) => {
         data += chunk
@@ -23,8 +40,43 @@ const httpsGet = (url) => {
           reject(e)
         }
       })
-    }).on('error', reject)
+    })
+
+    req.on('error', reject)
+    if (options.body) req.write(options.body)
+    req.end()
   })
+}
+
+/**
+ * Call Places API (New) with the shared API key headers.
+ * @param {string} url
+ * @param {{ method?: string, fieldMask: string, body?: Record<string, unknown> }} options
+ * @returns {Promise<Record<string, unknown>>}
+ */
+const placesRequest = (url, options) => {
+  const headers = {
+    'X-Goog-Api-Key': API_KEY,
+    'X-Goog-FieldMask': options.fieldMask
+  }
+  let body
+  if (options.body) {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(options.body)
+  }
+  return httpsJson(url, { method: options.method || 'GET', headers, body })
+}
+
+/**
+ * Return a readable error from a Places API (New) response, if present.
+ * @param {Record<string, unknown>} payload
+ * @returns {string}
+ */
+const getGoogleError = (payload) => {
+  const error = payload.error
+  if (!error || typeof error !== 'object') return ''
+  const message = /** @type {{ message?: unknown }} */ (error).message
+  return typeof message === 'string' ? message : 'Google Places request failed'
 }
 
 /**
@@ -112,28 +164,70 @@ module.exports = async function handler(req, res) {
     const placeId = body.placeId
     const pagetoken = body.pagetoken
 
-    let result
-
     if (action === 'search') {
-      let url
-      if (pagetoken) {
-        url = `https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken=${encodeURIComponent(String(pagetoken))}&key=${API_KEY}`
-      } else {
-        url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(String(query))}&key=${API_KEY}`
+      const payload = await placesRequest(PLACES_SEARCH_URL, {
+        method: 'POST',
+        fieldMask: SEARCH_FIELD_MASK,
+        body: pagetoken
+          ? { textQuery: String(query || ''), pageToken: String(pagetoken) }
+          : { textQuery: String(query || ''), pageSize: 20 }
+      })
+
+      const googleError = getGoogleError(payload)
+      if (googleError) {
+        return res.status(200).json({ success: false, error: googleError })
       }
-      result = await httpsGet(url)
-    } else if (action === 'details') {
-      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,formatted_phone_number,website,url&key=${API_KEY}`
-      result = await httpsGet(url)
-    } else if (action === 'scrapeEmail') {
+
+      const places = Array.isArray(payload.places) ? payload.places : []
+      return res.status(200).json({
+        success: true,
+        data: {
+          status: places.length ? 'OK' : 'ZERO_RESULTS',
+          results: places.map((place) => ({
+            place_id: /** @type {{ id?: string }} */ (place).id
+          })),
+          next_page_token: payload.nextPageToken || undefined
+        }
+      })
+    }
+
+    if (action === 'details') {
+      const payload = await placesRequest(
+        `https://places.googleapis.com/v1/places/${encodeURIComponent(String(placeId))}`,
+        { fieldMask: DETAILS_FIELD_MASK }
+      )
+
+      const googleError = getGoogleError(payload)
+      if (googleError) {
+        return res.status(200).json({ success: false, error: googleError })
+      }
+
+      const displayName = payload.displayName && typeof payload.displayName === 'object'
+        ? /** @type {{ text?: string }} */ (payload.displayName).text
+        : ''
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          status: 'OK',
+          result: {
+            name: displayName || '',
+            formatted_address: payload.formattedAddress || '',
+            formatted_phone_number: payload.nationalPhoneNumber || '',
+            website: payload.websiteUri || '',
+            url: payload.googleMapsUri || ''
+          }
+        }
+      })
+    }
+
+    if (action === 'scrapeEmail') {
       const website = String(body.website || '')
       const email = await scrapeEmailFromWebsite(website)
       return res.status(200).json({ success: true, email })
-    } else {
-      return res.status(400).json({ error: 'Unknown action' })
     }
 
-    return res.status(200).json({ success: true, data: result })
+    return res.status(400).json({ error: 'Unknown action' })
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     return res.status(500).json({ success: false, error })

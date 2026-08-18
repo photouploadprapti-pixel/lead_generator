@@ -620,9 +620,11 @@
 
         while (true) {
             try {
-                const body = pagetoken
-                    ? { action: 'search', pagetoken }
-                    : { action: 'search', query: `${placeType} ${city}` };
+                const body = {
+                    action: 'search',
+                    query: `${placeType} ${city}`,
+                    pagetoken: pagetoken || undefined
+                };
 
                 let res = await fetch('/api/places', {
                     method: 'POST',
@@ -633,7 +635,12 @@
                 let data = json.data || {};
 
                 if (!json.success) {
-                    log(`Search error for ${city}: ${json.error}`);
+                    log(`Search error for ${city}: ${json.error || 'Unknown error'}`);
+                    break;
+                }
+
+                if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+                    log(`Search error for ${city}: ${data.error_message || data.status}`);
                     break;
                 }
 
