@@ -437,7 +437,7 @@
                     emailLog(`[Row ${idx + 1}] Sending to: ${name} (${recipientEmail})...`);
 
                     try {
-                        const response = await fetch('/.netlify/functions/sendEmail', {
+                        const response = await fetch('/api/sendEmail', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -535,8 +535,7 @@
                 failedLog("[+] Connecting to local IMAP API bridge...");
                 
                 try {
-                    // Call the Netlify Serverless Function bridge
-                    const response = await fetch('/.netlify/functions/checkBounces', {
+                    const response = await fetch('/api/checkBounces', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ host, port, user, password: pass })
@@ -625,7 +624,7 @@
                     ? { action: 'search', pagetoken }
                     : { action: 'search', query: `${placeType} ${city}` };
 
-                let res = await fetch('/.netlify/functions/places', {
+                let res = await fetch('/api/places', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
@@ -657,7 +656,7 @@
 
     async function getDetails(placeId) {
         try {
-            let res = await fetch('/.netlify/functions/places', {
+            let res = await fetch('/api/places', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'details', placeId })
@@ -672,7 +671,7 @@
     async function scrapeEmail(website) {
         if (!website) return "";
         try {
-            let res = await fetch('/.netlify/functions/places', {
+            let res = await fetch('/api/places', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'scrapeEmail', website })

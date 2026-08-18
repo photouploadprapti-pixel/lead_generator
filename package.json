@@ -1,7 +1,7 @@
 {
   "name": "shivweb-tools",
   "version": "1.0.0",
-  "description": "Google Places Lead Extractor with Netlify Functions",
+  "description": "Google Places Lead Extractor with Vercel Serverless Functions",
   "dependencies": {
     "imap-simple": "^5.1.0",
     "mailparser": "^3.6.4",

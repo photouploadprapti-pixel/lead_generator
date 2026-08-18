@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "api/places.js": {
+      "maxDuration": 30
+    },
+    "api/sendEmail.js": {
+      "maxDuration": 30
+    },
+    "api/checkBounces.js": {
+      "maxDuration": 60
+    }
+  }
+}

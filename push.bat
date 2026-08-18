@@ -1,7 +1,6 @@
 @echo off
-git init
 git add .
-git commit -m "Initial commit with Netlify Functions"
+git commit -m "feat(hosting): migrate serverless functions from Netlify to Vercel"
 git branch -M main
-git remote add origin https://github.com/photouploadprapti-pixel/projshivmark.git
-git push -u origin main --force
+git remote add origin https://github.com/photouploadprapti-pixel/lead_generator.git 2>nul
+git push -u origin main
