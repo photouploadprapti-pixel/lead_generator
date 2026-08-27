@@ -5,7 +5,8 @@ const { parseBody } = require('../lib/parse-body')
 
 const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
-const SEARCH_FIELD_MASK = 'places.id,nextPageToken'
+const SEARCH_FIELD_MASK =
+  'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.googleMapsUri,nextPageToken'
 const DETAILS_FIELD_MASK =
   'id,displayName,formattedAddress,nationalPhoneNumber,websiteUri,googleMapsUri'
 
@@ -65,6 +66,33 @@ const placesRequest = (url, options) => {
     body = JSON.stringify(options.body)
   }
   return httpsJson(url, { method: options.method || 'GET', headers, body })
+}
+
+/**
+ * Map a Places API (New) place into the fields the frontend CSV expects.
+ * @param {Record<string, unknown>} place
+ * @returns {{
+ *   place_id: string,
+ *   name: string,
+ *   formatted_address: string,
+ *   formatted_phone_number: string,
+ *   website: string,
+ *   url: string
+ * }}
+ */
+const mapPlace = (place) => {
+  const displayName = place.displayName && typeof place.displayName === 'object'
+    ? /** @type {{ text?: string }} */ (place.displayName).text
+    : ''
+
+  return {
+    place_id: String(place.id || ''),
+    name: displayName || '',
+    formatted_address: String(place.formattedAddress || ''),
+    formatted_phone_number: String(place.nationalPhoneNumber || ''),
+    website: String(place.websiteUri || ''),
+    url: String(place.googleMapsUri || '')
+  }
 }
 
 /**
@@ -183,9 +211,9 @@ module.exports = async function handler(req, res) {
         success: true,
         data: {
           status: places.length ? 'OK' : 'ZERO_RESULTS',
-          results: places.map((place) => ({
-            place_id: /** @type {{ id?: string }} */ (place).id
-          })),
+          results: places.map((place) =>
+            mapPlace(/** @type {Record<string, unknown>} */ (place))
+          ),
           next_page_token: payload.nextPageToken || undefined
         }
       })
@@ -202,21 +230,11 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ success: false, error: googleError })
       }
 
-      const displayName = payload.displayName && typeof payload.displayName === 'object'
-        ? /** @type {{ text?: string }} */ (payload.displayName).text
-        : ''
-
       return res.status(200).json({
         success: true,
         data: {
           status: 'OK',
-          result: {
-            name: displayName || '',
-            formatted_address: payload.formattedAddress || '',
-            formatted_phone_number: payload.nationalPhoneNumber || '',
-            website: payload.websiteUri || '',
-            url: payload.googleMapsUri || ''
-          }
+          result: mapPlace(payload)
         }
       })
     }

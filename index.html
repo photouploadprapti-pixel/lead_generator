@@ -742,20 +742,28 @@
                 if (!place.place_id || seen.has(place.place_id)) continue;
                 seen.add(place.place_id);
 
-                let details = await getDetails(place.place_id);
-                let name = details.name || "";
-                let website = details.website || "";
+                let name = place.name || "";
+                let website = place.website || "";
+
+                if (!name && !website) {
+                    const details = await getDetails(place.place_id);
+                    name = details.name || "";
+                    website = details.website || "";
+                    place.formatted_phone_number = details.formatted_phone_number || "";
+                    place.formatted_address = details.formatted_address || "";
+                    place.url = details.url || "";
+                }
                 
-                log(`Processing: ${name}`);
+                log(`Processing: ${name || place.place_id}`);
                 let email = await scrapeEmail(website);
 
                 csvRows.push([
                     name,
                     email,
-                    details.formatted_phone_number || "",
+                    place.formatted_phone_number || "",
                     website,
-                    details.formatted_address || "",
-                    details.url || "",
+                    place.formatted_address || "",
+                    place.url || "",
                     city
                 ]);
                 
