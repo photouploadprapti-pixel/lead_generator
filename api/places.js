@@ -3,7 +3,7 @@ const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
 
-const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyBTE8u7TtPmYG6oTyOz5vNin1QpsF-Y7wc'
+const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
 const SEARCH_FIELD_MASK = 'places.id,nextPageToken'
 const DETAILS_FIELD_MASK =
