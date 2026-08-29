@@ -191,7 +191,7 @@
         <div class="form-group">
             <label for="cities">Cities</label>
             <input type="text" id="cities" placeholder="New York, Los Angeles, Chicago" required>
-            <div class="help-text">Separate multiple cities with commas (,).</div>
+            <div class="help-text">Separate multiple cities with commas (,). Search uses 1 page per city to stay under Google's daily cap.</div>
         </div>
         
         <div class="form-group">
@@ -618,52 +618,37 @@
     }
 
     async function searchPlaces(city, placeType) {
-        let results = [];
-        let pagetoken = null;
-
-        while (true) {
-            try {
-                const body = {
+        try {
+            let res = await fetch('/api/places', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     action: 'search',
                     query: `${placeType} ${city}`,
-                    pagetoken: pagetoken || undefined
-                };
+                    city: city,
+                    placeType: placeType
+                })
+            });
+            let json = await res.json();
+            let data = json.data || {};
 
-                let res = await fetch('/api/places', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-                let json = await res.json();
-                let data = json.data || {};
-
-                if (!json.success) {
-                    const error = json.error || 'Unknown error';
-                    log(`Search error for ${city}: ${error}`);
-                    return { results, quotaExceeded: isQuotaError(error), error };
-                }
-
-                if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-                    const error = data.error_message || data.status;
-                    log(`Search error for ${city}: ${error}`);
-                    return { results, quotaExceeded: isQuotaError(error), error };
-                }
-
-                if (data.results) results = results.concat(data.results);
-
-                if (data.next_page_token) {
-                    log(`Fetching next page for ${city}...`);
-                    await new Promise(r => setTimeout(r, 2500));
-                    pagetoken = data.next_page_token;
-                } else {
-                    break;
-                }
-            } catch (err) {
-                log(`Search error for ${city}: ${err.message}`);
-                return { results, quotaExceeded: isQuotaError(err.message), error: err.message };
+            if (!json.success) {
+                const error = json.error || 'Unknown error';
+                log(`Search error for ${city}: ${error}`);
+                return { results: [], quotaExceeded: isQuotaError(error), error };
             }
+
+            if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+                const error = data.error_message || data.status;
+                log(`Search error for ${city}: ${error}`);
+                return { results: [], quotaExceeded: isQuotaError(error), error };
+            }
+
+            return { results: data.results || [], quotaExceeded: false };
+        } catch (err) {
+            log(`Search error for ${city}: ${err.message}`);
+            return { results: [], quotaExceeded: isQuotaError(err.message), error: err.message };
         }
-        return { results, quotaExceeded: false };
     }
 
     async function getDetails(placeId) {
@@ -745,8 +730,8 @@
             log(`Found ${places.length} raw listings in ${city}.`);
 
             if (search.quotaExceeded) {
-                log("Stopped: Google daily Places search quota is used up for this API project.");
-                log("Wait until the quota resets (usually midnight Pacific) or raise SearchTextRequest per day in Google Cloud Quotas.");
+                log("Stopped: Google daily search quota is used up and the backup search also failed.");
+                log("Raise SearchTextRequest per day above 100 in Google Cloud Quotas, or wait until midnight Pacific.");
                 break;
             }
 

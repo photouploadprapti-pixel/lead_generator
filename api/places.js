@@ -2,11 +2,13 @@ const https = require('https')
 const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
+const { inferNearbyTypes } = require('../lib/place-types')
 
 const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
+const PLACES_NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby'
 const SEARCH_FIELD_MASK =
-  'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.googleMapsUri,nextPageToken'
+  'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.googleMapsUri'
 const DETAILS_FIELD_MASK =
   'id,displayName,formattedAddress,nationalPhoneNumber,websiteUri,googleMapsUri'
 
@@ -108,6 +110,68 @@ const getGoogleError = (payload) => {
 }
 
 /**
+ * Whether a Google error is a daily or rate quota limit.
+ * @param {string} message
+ * @returns {boolean}
+ */
+const isQuotaError = (message) => /quota exceeded/i.test(message || '')
+
+/**
+ * Geocode a city name with OpenStreetMap so Nearby Search can run without Text Search.
+ * @param {string} city
+ * @returns {Promise<{ lat: number, lng: number } | null>}
+ */
+const geocodeCity = async (city) => {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(`${city}, USA`)}`
+    const payload = await httpsJson(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'ShivWebLeadGenerator/1.0 (places fallback)',
+        Accept: 'application/json'
+      }
+    })
+
+    const first = Array.isArray(payload) ? payload[0] : null
+    if (!first || typeof first !== 'object') return null
+    const lat = Number(/** @type {{ lat?: string }} */ (first).lat)
+    const lng = Number(/** @type {{ lon?: string }} */ (first).lon)
+    if (Number.isNaN(lat) || Number.isNaN(lng)) return null
+    return { lat, lng }
+  } catch (err) {
+    return null
+  }
+}
+
+/**
+ * Search nearby businesses when daily Text Search quota is exhausted.
+ * @param {string} city
+ * @param {string} placeType
+ * @returns {Promise<Record<string, unknown>>}
+ */
+const searchNearbyFallback = async (city, placeType) => {
+  const coords = await geocodeCity(city)
+  if (!coords) {
+    return { error: { message: `Could not locate city: ${city}` } }
+  }
+
+  return placesRequest(PLACES_NEARBY_URL, {
+    method: 'POST',
+    fieldMask: SEARCH_FIELD_MASK,
+    body: {
+      includedTypes: inferNearbyTypes(placeType),
+      maxResultCount: 20,
+      locationRestriction: {
+        circle: {
+          center: { latitude: coords.lat, longitude: coords.lng },
+          radius: 25000.0
+        }
+      }
+    }
+  })
+}
+
+/**
  * Fetch a web page, following a single redirect hop.
  * @param {string} url
  * @returns {Promise<string>}
@@ -190,19 +254,24 @@ module.exports = async function handler(req, res) {
     const action = body.action
     const query = body.query
     const placeId = body.placeId
-    const pagetoken = body.pagetoken
 
     if (action === 'search') {
-      const payload = await placesRequest(PLACES_SEARCH_URL, {
+      let payload = await placesRequest(PLACES_SEARCH_URL, {
         method: 'POST',
         fieldMask: SEARCH_FIELD_MASK,
-        body: pagetoken
-          ? { textQuery: String(query || ''), pageToken: String(pagetoken) }
-          : { textQuery: String(query || ''), pageSize: 20 }
+        body: { textQuery: String(query || ''), pageSize: 20 }
       })
 
       const googleError = getGoogleError(payload)
-      if (googleError) {
+      if (googleError && isQuotaError(googleError)) {
+        const city = String(body.city || query || '')
+        const placeType = String(body.placeType || query || '')
+        payload = await searchNearbyFallback(city, placeType)
+        const nearbyError = getGoogleError(payload)
+        if (nearbyError) {
+          return res.status(200).json({ success: false, error: nearbyError })
+        }
+      } else if (googleError) {
         return res.status(200).json({ success: false, error: googleError })
       }
 
