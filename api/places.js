@@ -2,7 +2,9 @@ const https = require('https')
 const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
-const { inferNearbyTypes } = require('../lib/place-types')
+const { inferNearbyTypes, inferOsmFilters } = require('../lib/place-types')
+
+const OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
 
 const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
@@ -172,6 +174,84 @@ const searchNearbyFallback = async (city, placeType) => {
 }
 
 /**
+ * Build a CSV-ready listing from an OpenStreetMap element.
+ * @param {Record<string, unknown>} element
+ * @returns {{
+ *   place_id: string,
+ *   name: string,
+ *   formatted_address: string,
+ *   formatted_phone_number: string,
+ *   website: string,
+ *   url: string
+ * } | null}
+ */
+const mapOsmPlace = (element) => {
+  const tags = element.tags && typeof element.tags === 'object'
+    ? /** @type {Record<string, string>} */ (element.tags)
+    : {}
+  const name = tags.name || tags['name:en'] || ''
+  if (!name) return null
+
+  const address = [
+    tags['addr:housenumber'],
+    tags['addr:street'],
+    tags['addr:city'],
+    tags['addr:state']
+  ].filter(Boolean).join(', ')
+
+  const osmType = String(element.type || 'node')
+  const osmId = String(element.id || '')
+
+  return {
+    place_id: `osm:${osmType}/${osmId}`,
+    name,
+    formatted_address: address,
+    formatted_phone_number: tags.phone || tags['contact:phone'] || '',
+    website: tags.website || tags['contact:website'] || '',
+    url: osmId ? `https://www.openstreetmap.org/${osmType}/${osmId}` : ''
+  }
+}
+
+/**
+ * Search OpenStreetMap when both Google Places daily quotas are exhausted.
+ * @param {string} city
+ * @param {string} placeType
+ * @returns {Promise<{ places?: unknown[], error?: { message: string } }>}
+ */
+const searchOsmFallback = async (city, placeType) => {
+  try {
+    const coords = await geocodeCity(city)
+    if (!coords) {
+      return { error: { message: `Could not locate city: ${city}` } }
+    }
+
+    const filters = inferOsmFilters(placeType)
+      .map((filter) => `nwr${filter}(around:25000,${coords.lat},${coords.lng});`)
+      .join('\n  ')
+
+    const query = `[out:json][timeout:20];\n(\n  ${filters}\n);\nout center tags 20;`
+    const payload = await httpsJson(OVERPASS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'ShivWebLeadGenerator/1.0 (places fallback)'
+      },
+      body: `data=${encodeURIComponent(query)}`
+    })
+
+    const elements = Array.isArray(payload.elements) ? payload.elements : []
+    const places = elements
+      .map((element) => mapOsmPlace(/** @type {Record<string, unknown>} */ (element)))
+      .filter((place) => place !== null)
+
+    return { places }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { error: { message: `OpenStreetMap search failed: ${message}` } }
+  }
+}
+
+/**
  * Fetch a web page, following a single redirect hop.
  * @param {string} url
  * @returns {Promise<string>}
@@ -256,36 +336,64 @@ module.exports = async function handler(req, res) {
     const placeId = body.placeId
 
     if (action === 'search') {
-      let payload = await placesRequest(PLACES_SEARCH_URL, {
-        method: 'POST',
-        fieldMask: SEARCH_FIELD_MASK,
-        body: { textQuery: String(query || ''), pageSize: 20 }
-      })
+      const city = String(body.city || query || '')
+      const placeType = String(body.placeType || query || '')
+      const skipGoogle = body.skipGoogle === true
 
-      const googleError = getGoogleError(payload)
-      if (googleError && isQuotaError(googleError)) {
-        const city = String(body.city || query || '')
-        const placeType = String(body.placeType || query || '')
-        payload = await searchNearbyFallback(city, placeType)
-        const nearbyError = getGoogleError(payload)
-        if (nearbyError) {
-          return res.status(200).json({ success: false, error: nearbyError })
-        }
-      } else if (googleError) {
-        return res.status(200).json({ success: false, error: googleError })
-      }
-
-      const places = Array.isArray(payload.places) ? payload.places : []
-      return res.status(200).json({
+      /**
+       * @param {unknown[]} places
+       * @param {string} source
+       */
+      const succeed = (places, source) => res.status(200).json({
         success: true,
+        source,
         data: {
           status: places.length ? 'OK' : 'ZERO_RESULTS',
-          results: places.map((place) =>
-            mapPlace(/** @type {Record<string, unknown>} */ (place))
-          ),
-          next_page_token: payload.nextPageToken || undefined
+          results: places
         }
       })
+
+      if (!skipGoogle) {
+        const payload = await placesRequest(PLACES_SEARCH_URL, {
+          method: 'POST',
+          fieldMask: SEARCH_FIELD_MASK,
+          body: { textQuery: String(query || ''), pageSize: 20 }
+        })
+
+        const googleError = getGoogleError(payload)
+        if (!googleError) {
+          const places = Array.isArray(payload.places) ? payload.places : []
+          return succeed(
+            places.map((place) => mapPlace(/** @type {Record<string, unknown>} */ (place))),
+            'google-text'
+          )
+        }
+
+        if (!isQuotaError(googleError)) {
+          return res.status(200).json({ success: false, error: googleError })
+        }
+
+        const nearbyPayload = await searchNearbyFallback(city, placeType)
+        const nearbyError = getGoogleError(nearbyPayload)
+        if (!nearbyError) {
+          const places = Array.isArray(nearbyPayload.places) ? nearbyPayload.places : []
+          return succeed(
+            places.map((place) => mapPlace(/** @type {Record<string, unknown>} */ (place))),
+            'google-nearby'
+          )
+        }
+
+        if (!isQuotaError(nearbyError)) {
+          return res.status(200).json({ success: false, error: nearbyError })
+        }
+      }
+
+      const osmPayload = await searchOsmFallback(city, placeType)
+      if (osmPayload.error) {
+        return res.status(200).json({ success: false, error: osmPayload.error.message })
+      }
+
+      return succeed(osmPayload.places || [], 'openstreetmap')
     }
 
     if (action === 'details') {

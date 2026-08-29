@@ -191,7 +191,7 @@
         <div class="form-group">
             <label for="cities">Cities</label>
             <input type="text" id="cities" placeholder="New York, Los Angeles, Chicago" required>
-            <div class="help-text">Separate multiple cities with commas (,). Search uses 1 page per city to stay under Google's daily cap.</div>
+            <div class="help-text">Separate multiple cities with commas (,). If Google daily quota is used up, search continues on OpenStreetMap.</div>
         </div>
         
         <div class="form-group">
@@ -617,7 +617,7 @@
         return /quota exceeded/i.test(message || '');
     }
 
-    async function searchPlaces(city, placeType) {
+    async function searchPlaces(city, placeType, skipGoogle) {
         try {
             let res = await fetch('/api/places', {
                 method: 'POST',
@@ -626,7 +626,8 @@
                     action: 'search',
                     query: `${placeType} ${city}`,
                     city: city,
-                    placeType: placeType
+                    placeType: placeType,
+                    skipGoogle: skipGoogle === true
                 })
             });
             let json = await res.json();
@@ -635,19 +636,23 @@
             if (!json.success) {
                 const error = json.error || 'Unknown error';
                 log(`Search error for ${city}: ${error}`);
-                return { results: [], quotaExceeded: isQuotaError(error), error };
+                return { results: [], quotaExceeded: isQuotaError(error), error, source: '' };
             }
 
             if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
                 const error = data.error_message || data.status;
                 log(`Search error for ${city}: ${error}`);
-                return { results: [], quotaExceeded: isQuotaError(error), error };
+                return { results: [], quotaExceeded: isQuotaError(error), error, source: '' };
             }
 
-            return { results: data.results || [], quotaExceeded: false };
+            return {
+                results: data.results || [],
+                quotaExceeded: false,
+                source: json.source || 'google-text'
+            };
         } catch (err) {
             log(`Search error for ${city}: ${err.message}`);
-            return { results: [], quotaExceeded: isQuotaError(err.message), error: err.message };
+            return { results: [], quotaExceeded: isQuotaError(err.message), error: err.message, source: '' };
         }
     }
 
@@ -722,17 +727,21 @@
         
         let csvRows = [["Name", "Email", "Phone", "Website", "Address", "More Info", "City Input"]];
         let seen = new Set();
+        let skipGoogle = false;
 
         for (let city of cities) {
             log(`Searching for elements in: ${city}`);
-            const search = await searchPlaces(city, placeType);
+            const search = await searchPlaces(city, placeType, skipGoogle);
             const places = search.results || [];
+            if (search.source === 'openstreetmap') {
+                skipGoogle = true;
+                log(`Using OpenStreetMap for ${city} (Google daily quotas are used up).`);
+            }
             log(`Found ${places.length} raw listings in ${city}.`);
 
-            if (search.quotaExceeded) {
-                log("Stopped: Google daily search quota is used up and the backup search also failed.");
-                log("Raise SearchTextRequest per day above 100 in Google Cloud Quotas, or wait until midnight Pacific.");
-                break;
+            if (search.quotaExceeded && !places.length) {
+                log(`Skipped ${city}: no listings from Google or OpenStreetMap.`);
+                continue;
             }
 
             for (let place of places) {
@@ -741,8 +750,9 @@
 
                 let name = place.name || "";
                 let website = place.website || "";
+                const isOsm = String(place.place_id).startsWith('osm:');
 
-                if (!name && !website) {
+                if (!isOsm && !name && !website) {
                     const details = await getDetails(place.place_id);
                     name = details.name || "";
                     website = details.website || "";
