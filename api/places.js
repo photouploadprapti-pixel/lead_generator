@@ -2,9 +2,7 @@ const https = require('https')
 const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
-const { inferOsmFilters } = require('../lib/place-types')
-
-const OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
+const { inferFallbackQuery } = require('../lib/place-types')
 
 const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
@@ -32,7 +30,7 @@ const httpsJson = (url, options = {}) => {
       path: `${parsed.pathname}${parsed.search}`,
       method: options.method || 'GET',
       headers,
-      timeout: 8000
+      timeout: 12000
     }, (res) => {
       let data = ''
       res.on('data', (chunk) => {
@@ -128,35 +126,8 @@ const getGoogleError = (payload) => {
 const isQuotaError = (message) => /quota exceeded/i.test(message || '')
 
 /**
- * Geocode a city name with OpenStreetMap so Nearby Search can run without Text Search.
- * @param {string} city
- * @returns {Promise<{ lat: number, lng: number } | null>}
- */
-const geocodeCity = async (city) => {
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(`${city}, USA`)}`
-    const payload = await httpsJson(url, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'ShivWebLeadGenerator/1.0 (places fallback)',
-        Accept: 'application/json'
-      }
-    })
-
-    const first = Array.isArray(payload) ? payload[0] : null
-    if (!first || typeof first !== 'object') return null
-    const lat = Number(/** @type {{ lat?: string }} */ (first).lat)
-    const lng = Number(/** @type {{ lon?: string }} */ (first).lon)
-    if (Number.isNaN(lat) || Number.isNaN(lng)) return null
-    return { lat, lng }
-  } catch (err) {
-    return null
-  }
-}
-
-/**
- * Build a CSV-ready listing from an OpenStreetMap element.
- * @param {Record<string, unknown>} element
+ * Map a Nominatim search hit into the CSV listing shape.
+ * @param {Record<string, unknown>} item
  * @returns {{
  *   place_id: string,
  *   name: string,
@@ -166,70 +137,96 @@ const geocodeCity = async (city) => {
  *   url: string
  * } | null}
  */
-const mapOsmPlace = (element) => {
-  const tags = element.tags && typeof element.tags === 'object'
-    ? /** @type {Record<string, string>} */ (element.tags)
-    : {}
-  const name = tags.name || tags['name:en'] || ''
-  if (!name) return null
-
-  const address = [
-    tags['addr:housenumber'],
-    tags['addr:street'],
-    tags['addr:city'],
-    tags['addr:state']
-  ].filter(Boolean).join(', ')
-
-  const osmType = String(element.type || 'node')
-  const osmId = String(element.id || '')
+const mapNominatimPlace = (item) => {
+  const name = String(item.name || '')
+  const address = String(item.display_name || '')
+  if (!name && !address) return null
+  const osmType = String(item.osm_type || 'node')
+  const osmId = String(item.osm_id || item.place_id || '')
 
   return {
     place_id: `osm:${osmType}/${osmId}`,
-    name,
+    name: name || address.split(',')[0],
     formatted_address: address,
-    formatted_phone_number: tags.phone || tags['contact:phone'] || '',
-    website: tags.website || tags['contact:website'] || '',
+    formatted_phone_number: '',
+    website: '',
     url: osmId ? `https://www.openstreetmap.org/${osmType}/${osmId}` : ''
   }
 }
 
 /**
- * Search OpenStreetMap when both Google Places daily quotas are exhausted.
+ * Map a Photon GeoJSON feature into the CSV listing shape.
+ * @param {Record<string, unknown>} feature
+ * @returns {{
+ *   place_id: string,
+ *   name: string,
+ *   formatted_address: string,
+ *   formatted_phone_number: string,
+ *   website: string,
+ *   url: string
+ * } | null}
+ */
+const mapPhotonPlace = (feature) => {
+  const properties = feature.properties && typeof feature.properties === 'object'
+    ? /** @type {Record<string, unknown>} */ (feature.properties)
+    : {}
+  const name = String(properties.name || properties.street || '')
+  if (!name) return null
+  const address = [properties.name, properties.street, properties.city, properties.state, properties.country]
+    .filter(Boolean)
+    .join(', ')
+  const osmType = String(properties.osm_type || 'N').toLowerCase() === 'n' ? 'node' : 'way'
+  const osmId = String(properties.osm_id || '')
+
+  return {
+    place_id: `osm:${osmType}/${osmId || name}`,
+    name,
+    formatted_address: address,
+    formatted_phone_number: '',
+    website: '',
+    url: osmId ? `https://www.openstreetmap.org/${osmType}/${osmId}` : ''
+  }
+}
+
+/**
+ * Search Nominatim, then Photon, when Google Places is unavailable.
  * @param {string} city
  * @param {string} placeType
  * @returns {Promise<{ places?: unknown[], error?: { message: string } }>}
  */
 const searchOsmFallback = async (city, placeType) => {
+  const phrase = `${inferFallbackQuery(placeType)} ${city} USA`
+  const headers = {
+    'User-Agent': 'ShivWebLeadGenerator/1.0 (places fallback)',
+    Accept: 'application/json'
+  }
+
   try {
-    const coords = await geocodeCity(city)
-    if (!coords) {
-      return { error: { message: `Could not locate city: ${city}` } }
-    }
-
-    const filters = inferOsmFilters(placeType)
-      .map((filter) => `nwr${filter}(around:25000,${coords.lat},${coords.lng});`)
-      .join('\n  ')
-
-    const query = `[out:json][timeout:8];\n(\n  ${filters}\n);\nout center tags 20;`
-    const payload = await httpsJson(OVERPASS_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'ShivWebLeadGenerator/1.0 (places fallback)'
-      },
-      body: `data=${encodeURIComponent(query)}`
-    })
-
-    const elements = Array.isArray(payload.elements) ? payload.elements : []
-    const places = elements
-      .map((element) => mapOsmPlace(/** @type {Record<string, unknown>} */ (element)))
+    const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&limit=20&q=${encodeURIComponent(phrase)}`
+    const nominatim = await httpsJson(nominatimUrl, { method: 'GET', headers })
+    const nominatimRows = Array.isArray(nominatim) ? nominatim : []
+    const nominatimPlaces = nominatimRows
+      .map((item) => mapNominatimPlace(/** @type {Record<string, unknown>} */ (item)))
       .filter((place) => place !== null)
+    if (nominatimPlaces.length) return { places: nominatimPlaces }
+  } catch (err) {
+    // Try Photon next.
+  }
 
-    return { places }
+  try {
+    const photonUrl = `https://photon.komoot.io/api/?limit=20&q=${encodeURIComponent(phrase)}`
+    const photon = await httpsJson(photonUrl, { method: 'GET', headers })
+    const features = Array.isArray(photon.features) ? photon.features : []
+    const photonPlaces = features
+      .map((feature) => mapPhotonPlace(/** @type {Record<string, unknown>} */ (feature)))
+      .filter((place) => place !== null)
+    if (photonPlaces.length) return { places: photonPlaces }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { error: { message: `OpenStreetMap search failed: ${message}` } }
   }
+
+  return { places: [] }
 }
 
 /**
@@ -353,7 +350,7 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({
           success: false,
           error: googleError,
-          retryOsm: isQuotaError(googleError) || /timed out/i.test(googleError)
+          retryOsm: true
         })
       }
 
