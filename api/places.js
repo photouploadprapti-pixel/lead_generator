@@ -2,13 +2,12 @@ const https = require('https')
 const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
-const { inferNearbyTypes, inferOsmFilters } = require('../lib/place-types')
+const { inferOsmFilters } = require('../lib/place-types')
 
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
 
 const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
-const PLACES_NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby'
 const SEARCH_FIELD_MASK =
   'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.googleMapsUri'
 const DETAILS_FIELD_MASK =
@@ -32,7 +31,8 @@ const httpsJson = (url, options = {}) => {
       hostname: parsed.hostname,
       path: `${parsed.pathname}${parsed.search}`,
       method: options.method || 'GET',
-      headers
+      headers,
+      timeout: 8000
     }, (res) => {
       let data = ''
       res.on('data', (chunk) => {
@@ -42,11 +42,15 @@ const httpsJson = (url, options = {}) => {
         try {
           resolve(JSON.parse(data))
         } catch (e) {
-          reject(e)
+          reject(new Error(data.slice(0, 160) || 'Invalid JSON response'))
         }
       })
     })
 
+    req.on('timeout', () => {
+      req.destroy()
+      reject(new Error('Request timed out'))
+    })
     req.on('error', reject)
     if (options.body) req.write(options.body)
     req.end()
@@ -59,7 +63,7 @@ const httpsJson = (url, options = {}) => {
  * @param {{ method?: string, fieldMask: string, body?: Record<string, unknown> }} options
  * @returns {Promise<Record<string, unknown>>}
  */
-const placesRequest = (url, options) => {
+const placesRequest = async (url, options) => {
   const headers = {
     'X-Goog-Api-Key': API_KEY,
     'X-Goog-FieldMask': options.fieldMask
@@ -69,7 +73,12 @@ const placesRequest = (url, options) => {
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(options.body)
   }
-  return httpsJson(url, { method: options.method || 'GET', headers, body })
+  try {
+    return await httpsJson(url, { method: options.method || 'GET', headers, body })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { error: { message } }
+  }
 }
 
 /**
@@ -146,34 +155,6 @@ const geocodeCity = async (city) => {
 }
 
 /**
- * Search nearby businesses when daily Text Search quota is exhausted.
- * @param {string} city
- * @param {string} placeType
- * @returns {Promise<Record<string, unknown>>}
- */
-const searchNearbyFallback = async (city, placeType) => {
-  const coords = await geocodeCity(city)
-  if (!coords) {
-    return { error: { message: `Could not locate city: ${city}` } }
-  }
-
-  return placesRequest(PLACES_NEARBY_URL, {
-    method: 'POST',
-    fieldMask: SEARCH_FIELD_MASK,
-    body: {
-      includedTypes: inferNearbyTypes(placeType),
-      maxResultCount: 20,
-      locationRestriction: {
-        circle: {
-          center: { latitude: coords.lat, longitude: coords.lng },
-          radius: 25000.0
-        }
-      }
-    }
-  })
-}
-
-/**
  * Build a CSV-ready listing from an OpenStreetMap element.
  * @param {Record<string, unknown>} element
  * @returns {{
@@ -229,7 +210,7 @@ const searchOsmFallback = async (city, placeType) => {
       .map((filter) => `nwr${filter}(around:25000,${coords.lat},${coords.lng});`)
       .join('\n  ')
 
-    const query = `[out:json][timeout:20];\n(\n  ${filters}\n);\nout center tags 20;`
+    const query = `[out:json][timeout:8];\n(\n  ${filters}\n);\nout center tags 20;`
     const payload = await httpsJson(OVERPASS_URL, {
       method: 'POST',
       headers: {
@@ -369,23 +350,11 @@ module.exports = async function handler(req, res) {
           )
         }
 
-        if (!isQuotaError(googleError)) {
-          return res.status(200).json({ success: false, error: googleError })
-        }
-
-        const nearbyPayload = await searchNearbyFallback(city, placeType)
-        const nearbyError = getGoogleError(nearbyPayload)
-        if (!nearbyError) {
-          const places = Array.isArray(nearbyPayload.places) ? nearbyPayload.places : []
-          return succeed(
-            places.map((place) => mapPlace(/** @type {Record<string, unknown>} */ (place))),
-            'google-nearby'
-          )
-        }
-
-        if (!isQuotaError(nearbyError)) {
-          return res.status(200).json({ success: false, error: nearbyError })
-        }
+        return res.status(200).json({
+          success: false,
+          error: googleError,
+          retryOsm: isQuotaError(googleError) || /timed out/i.test(googleError)
+        })
       }
 
       const osmPayload = await searchOsmFallback(city, placeType)
