@@ -191,7 +191,7 @@
         <div class="form-group">
             <label for="cities">Cities</label>
             <input type="text" id="cities" placeholder="New York, Los Angeles, Chicago" required>
-            <div class="help-text">Separate multiple cities with commas (,). If Google daily quota is used up, search continues on OpenStreetMap.</div>
+            <div class="help-text">Separate multiple cities with commas (,). Up to 60 Google listings are fetched per city. Rows without a real email are skipped.</div>
         </div>
         
         <div class="form-group">
@@ -617,56 +617,75 @@
         return /quota exceeded/i.test(message || '');
     }
 
+    function isUsableEmail(email) {
+        const value = String(email || '').trim().toLowerCase();
+        if (!value || value.indexOf('@') === -1) return false;
+        if (value === 'example@domain.com' || value === 'name@domain.com' || value === 'email@domain.com') return false;
+        if (/^(example|name|user|email|test)@/.test(value)) return false;
+        if (/@(example|domain|email|test)\./.test(value)) return false;
+        if (/\.(png|gif|jpe?g|webp|svg|ico)(\?|$)/.test(value)) return false;
+        return true;
+    }
+
+    async function searchPlacesPage(city, placeType, skipGoogle, pagetoken) {
+        let res = await fetch('/api/places', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'search',
+                query: `${placeType} ${city}`,
+                city: city,
+                placeType: placeType,
+                skipGoogle: skipGoogle === true,
+                pagetoken: pagetoken || undefined
+            })
+        });
+        const raw = await res.text();
+        return JSON.parse(raw);
+    }
+
     async function searchPlaces(city, placeType, skipGoogle) {
         try {
-            let res = await fetch('/api/places', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    action: 'search',
-                    query: `${placeType} ${city}`,
-                    city: city,
-                    placeType: placeType,
-                    skipGoogle: skipGoogle === true
-                })
-            });
-            const raw = await res.text();
-            let json;
-            try {
-                json = JSON.parse(raw);
-            } catch (parseErr) {
-                const preview = (raw || '').replace(/\s+/g, ' ').slice(0, 140);
-                if (!skipGoogle) {
-                    log(`Google search timed out for ${city}. Trying OpenStreetMap...`);
-                    return searchPlaces(city, placeType, true);
+            let results = [];
+            let pagetoken = null;
+            let source = 'google-text';
+            const maxPages = skipGoogle ? 1 : 3;
+
+            for (let page = 0; page < maxPages; page++) {
+                let json;
+                try {
+                    json = await searchPlacesPage(city, placeType, skipGoogle, pagetoken);
+                } catch (parseErr) {
+                    if (!skipGoogle) {
+                        log(`Google search timed out for ${city}. Trying OpenStreetMap...`);
+                        return searchPlaces(city, placeType, true);
+                    }
+                    log(`Search error for ${city}: ${parseErr.message}`);
+                    return { results, quotaExceeded: false, error: parseErr.message, source: '' };
                 }
-                log(`Search error for ${city}: ${preview || parseErr.message}`);
-                return { results: [], quotaExceeded: false, error: preview, source: '' };
-            }
 
-            let data = json.data || {};
+                let data = json.data || {};
 
-            if (!json.success) {
-                const error = json.error || 'Unknown error';
-                if (!skipGoogle && json.retryOsm) {
-                    log(`Google limit for ${city}. Trying OpenStreetMap...`);
-                    return searchPlaces(city, placeType, true);
+                if (!json.success) {
+                    const error = json.error || 'Unknown error';
+                    if (!skipGoogle && json.retryOsm) {
+                        log(`All Google keys failed for ${city}. Trying OpenStreetMap...`);
+                        return searchPlaces(city, placeType, true);
+                    }
+                    log(`Search error for ${city}: ${error}`);
+                    return { results, quotaExceeded: isQuotaError(error), error, source: '' };
                 }
-                log(`Search error for ${city}: ${error}`);
-                return { results: [], quotaExceeded: isQuotaError(error), error, source: '' };
+
+                source = json.source || source;
+                if (data.results) results = results.concat(data.results);
+
+                if (source !== 'google-text' || !data.next_page_token) break;
+                log(`Fetching extra Google page ${page + 2} for ${city}...`);
+                await new Promise(r => setTimeout(r, 1200));
+                pagetoken = data.next_page_token;
             }
 
-            if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-                const error = data.error_message || data.status;
-                log(`Search error for ${city}: ${error}`);
-                return { results: [], quotaExceeded: isQuotaError(error), error, source: '' };
-            }
-
-            return {
-                results: data.results || [],
-                quotaExceeded: false,
-                source: json.source || 'google-text'
-            };
+            return { results, quotaExceeded: false, source };
         } catch (err) {
             if (!skipGoogle) {
                 log(`Google search failed for ${city}. Trying OpenStreetMap...`);
@@ -784,6 +803,11 @@
                 
                 log(`Processing: ${name || place.place_id}`);
                 let email = await scrapeEmail(website);
+
+                if (!isUsableEmail(email)) {
+                    log(`Skipped ${name || place.place_id}: no usable email.`);
+                    continue;
+                }
 
                 csvRows.push([
                     name,

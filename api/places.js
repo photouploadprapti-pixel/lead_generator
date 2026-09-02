@@ -3,8 +3,8 @@ const { URL } = require('url')
 
 const { parseBody } = require('../lib/parse-body')
 const { inferFallbackQuery } = require('../lib/place-types')
-
-const API_KEY = process.env.GOOGLE_PLACES_API_KEY || 'AIzaSyDJt_83h5jYhu-KT5EsLFy24HZhMw57vQU'
+const { getGoogleApiKeys, isKeyExhaustedError } = require('../lib/google-keys')
+const { firstUsableEmail } = require('../lib/usable-email')
 const PLACES_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
 const SEARCH_FIELD_MASK =
   'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.googleMapsUri'
@@ -63,7 +63,7 @@ const httpsJson = (url, options = {}) => {
  */
 const placesRequest = async (url, options) => {
   const headers = {
-    'X-Goog-Api-Key': API_KEY,
+    'X-Goog-Api-Key': options.apiKey,
     'X-Goog-FieldMask': options.fieldMask
   }
   let body
@@ -124,6 +124,30 @@ const getGoogleError = (payload) => {
  * @returns {boolean}
  */
 const isQuotaError = (message) => /quota exceeded/i.test(message || '')
+
+/**
+ * Call Places Text Search or Details, rotating keys when one is exhausted.
+ * @param {string} url
+ * @param {{ method?: string, fieldMask: string, body?: Record<string, unknown> }} options
+ * @returns {Promise<{ payload?: Record<string, unknown>, error?: string, allKeysFailed?: boolean }>}
+ */
+const placesRequestWithRotation = async (url, options) => {
+  const keys = getGoogleApiKeys()
+  let lastError = ''
+
+  for (const apiKey of keys) {
+    const payload = await placesRequest(url, { ...options, apiKey })
+    const googleError = getGoogleError(payload)
+    if (!googleError) return { payload }
+
+    lastError = googleError
+    if (!isKeyExhaustedError(googleError) && !isQuotaError(googleError) && !/timed out/i.test(googleError)) {
+      return { error: googleError }
+    }
+  }
+
+  return { error: lastError || 'All Google Places API keys failed', allKeysFailed: true }
+}
 
 /**
  * Map a Nominatim search hit into the CSV listing shape.
@@ -284,17 +308,17 @@ const scrapeEmailFromWebsite = async (website) => {
       .replace(/\[dot\]/g, '.')
       .replace(/\(dot\)/g, '.')
 
+  const collected = []
   let text = clean(await fetchPage(website))
-  let matches = text.match(emailRegex)
-  if (matches && matches.length) return matches[0]
+  collected.push(...(text.match(emailRegex) || []))
 
   for (const path of ['contact', 'contact-us', 'about']) {
+    if (firstUsableEmail(collected)) break
     const subUrl = website.replace(/\/$/, '') + '/' + path
     text = clean(await fetchPage(subUrl))
-    matches = text.match(emailRegex)
-    if (matches && matches.length) return matches[0]
+    collected.push(...(text.match(emailRegex) || []))
   }
-  return ''
+  return firstUsableEmail(collected)
 }
 
 /**
@@ -332,25 +356,37 @@ module.exports = async function handler(req, res) {
       })
 
       if (!skipGoogle) {
-        const payload = await placesRequest(PLACES_SEARCH_URL, {
+        const pageToken = body.pagetoken ? String(body.pagetoken) : ''
+        const searchBody = pageToken
+          ? { textQuery: String(query || ''), pageSize: 20, pageToken }
+          : { textQuery: String(query || ''), pageSize: 20 }
+
+        const rotated = await placesRequestWithRotation(PLACES_SEARCH_URL, {
           method: 'POST',
-          fieldMask: SEARCH_FIELD_MASK,
-          body: { textQuery: String(query || ''), pageSize: 20 }
+          fieldMask: SEARCH_FIELD_MASK + ',nextPageToken',
+          body: searchBody
         })
 
-        const googleError = getGoogleError(payload)
-        if (!googleError) {
-          const places = Array.isArray(payload.places) ? payload.places : []
-          return succeed(
-            places.map((place) => mapPlace(/** @type {Record<string, unknown>} */ (place))),
-            'google-text'
-          )
+        if (rotated.payload) {
+          const places = Array.isArray(rotated.payload.places) ? rotated.payload.places : []
+          return res.status(200).json({
+            success: true,
+            source: 'google-text',
+            data: {
+              status: places.length ? 'OK' : 'ZERO_RESULTS',
+              results: places.map((place) =>
+                mapPlace(/** @type {Record<string, unknown>} */ (place))
+              ),
+              next_page_token: rotated.payload.nextPageToken || undefined
+            }
+          })
         }
 
         return res.status(200).json({
           success: false,
-          error: googleError,
-          retryOsm: true
+          error: rotated.error,
+          retryOsm: true,
+          allKeysFailed: rotated.allKeysFailed === true
         })
       }
 
@@ -363,21 +399,20 @@ module.exports = async function handler(req, res) {
     }
 
     if (action === 'details') {
-      const payload = await placesRequest(
+      const rotated = await placesRequestWithRotation(
         `https://places.googleapis.com/v1/places/${encodeURIComponent(String(placeId))}`,
         { fieldMask: DETAILS_FIELD_MASK }
       )
 
-      const googleError = getGoogleError(payload)
-      if (googleError) {
-        return res.status(200).json({ success: false, error: googleError })
+      if (!rotated.payload) {
+        return res.status(200).json({ success: false, error: rotated.error })
       }
 
       return res.status(200).json({
         success: true,
         data: {
           status: 'OK',
-          result: mapPlace(payload)
+          result: mapPlace(rotated.payload)
         }
       })
     }
